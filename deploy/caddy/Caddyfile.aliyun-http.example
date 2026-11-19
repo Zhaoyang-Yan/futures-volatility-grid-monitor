@@ -1,0 +1,6 @@
+:80 {
+    reverse_proxy 127.0.0.1:8000
+}
+
+# Aliyun ECS first-pass HTTP reverse proxy.
+# Gunicorn must stay bound to 127.0.0.1:8000 and should not be exposed publicly.

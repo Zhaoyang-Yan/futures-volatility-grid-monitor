@@ -1,0 +1,6 @@
+domain.com {
+    reverse_proxy 127.0.0.1:8000
+}
+
+# Caddy can automatically request and renew HTTPS certificates
+# when the domain points to this server and ports 80/443 are open.

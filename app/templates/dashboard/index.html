@@ -1,0 +1,1042 @@
+{% extends "base.html" %}
+
+{% block title %}监控任务 - grid_monitor{% endblock %}
+
+{% block content %}
+  {% set active_task_count = tasks|selectattr("is_active")|list|length %}
+  {% set empty_alert_statuses = ["no_alert", "none", "null", "undefined"] %}
+  {% set runtime_alert_status_label = "暂无网格报警" if (not runtime_diagnostics.last_alert_status or runtime_diagnostics.last_alert_status in empty_alert_statuses) else runtime_diagnostics.last_alert_status %}
+  {% set live_mode_labels = {"blocked": "阻塞", "warning": "警告", "ready": "正常", "test_mode": "测试模式", "manual_only": "手动模式"} %}
+  <div class="dashboard-shell" id="dashboard-overview">
+  <div class="dashboard-header">
+    <div class="dashboard-brand">
+      <div class="dashboard-logo" aria-hidden="true">网</div>
+      <div>
+        <h1 class="dashboard-title">网格监控中心</h1>
+        <p class="dashboard-subtitle mb-0">Grid Trading Alert System & Diagnostic Tool</p>
+      </div>
+    </div>
+    <div class="dashboard-header-actions">
+      <span class="status-pill status-pill-info">
+        当前行情源
+        <span class="badge {{ market_mode_view.badge_class }}">{{ market_mode_view.label }}</span>
+        <span class="visually-hidden">{{ market_mode_view.description }}</span>
+      </span>
+      <span class="status-pill status-pill-live">
+        运行状态
+        <span class="badge {{ live_mode_status.live_mode_badge }}">{{ live_mode_labels.get(live_mode_status.live_mode_status, "状态未知") }}</span>
+      </span>
+      <div class="dashboard-clock-card" data-dashboard-clock>
+        <time class="dashboard-clock-time" id="dashboardBeijingClock">--/--/-- --:--:--</time>
+        <span class="dashboard-clock-label">北京时间（GMT+8）</span>
+      </div>
+      <button class="btn btn-dark action-button" type="button" data-bs-toggle="modal" data-bs-target="#addTaskModal">
+        新增任务
+      </button>
+      {% if config.DASHBOARD_AUTH_ENABLED %}
+        <a class="btn btn-outline-secondary action-button dashboard-logout-button" href="{{ url_for('dashboard.logout') }}">退出登录</a>
+      {% endif %}
+    </div>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      <div class="dashboard-flashes mb-3">
+        {% for category, message in messages %}
+          <div class="alert alert-{{ category }} mb-2" role="alert">{{ message }}</div>
+        {% endfor %}
+      </div>
+    {% endif %}
+  {% endwith %}
+
+  <section class="dashboard-card-grid mb-3" aria-label="运行摘要">
+    <article class="summary-card summary-card-tasks">
+      <div class="summary-card-label">监控任务</div>
+      <div class="summary-card-value">{{ tasks|length }}</div>
+      <div class="summary-card-meta">启用 {{ active_task_count }} 个</div>
+    </article>
+    <article class="summary-card summary-card-alerts">
+      <div class="summary-card-label">最近报警</div>
+      {% if latest_alert %}
+        <div class="summary-card-value summary-card-text">
+          {% if latest_alert.direction == "UP" %}
+            向上突破
+          {% elif latest_alert.direction == "DOWN" %}
+            向下突破
+          {% else %}
+            网格报警
+          {% endif %}
+        </div>
+        <div class="summary-card-meta">
+          合约 {{ latest_alert.code }}
+          {% if latest_alert.created_at %}
+            ｜{{ latest_alert.created_at | china_time }}
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="summary-card-value summary-card-text">暂无网格报警</div>
+        <div class="summary-card-meta">合约 暂无</div>
+      {% endif %}
+    </article>
+    <article class="summary-card summary-card-market">
+      <div class="summary-card-label">行情与通知</div>
+      <div class="summary-card-value summary-card-text">{{ runtime_diagnostics.market_data_mode }}</div>
+      <div class="summary-card-meta">通知 {{ runtime_diagnostics.notification_mode }}｜自动监控 {{ "暂停" if runtime_diagnostics.auto_monitoring_paused else ("启用" if runtime_diagnostics.auto_monitoring_enabled else "关闭") }}</div>
+    </article>
+    <article class="summary-card summary-card-diagnostics">
+      <div class="summary-card-label">运行诊断</div>
+      <div class="summary-card-value">{{ preflight_checks.blocked_count }} / {{ preflight_checks.warning_count }}</div>
+      <div class="summary-card-meta">阻塞 / 警告</div>
+    </article>
+  </section>
+
+  <section class="dashboard-card task-panel compact-status mb-3">
+    <div class="compact-status-bar">
+      <div class="compact-status-summary">
+        <div class="compact-status-group" aria-label="当前运行状态">
+          <span class="compact-status-heading">当前状态</span>
+          <span class="compact-status-item">行情 <strong>{{ runtime_diagnostics.market_data_mode }}</strong></span>
+          <span class="compact-status-item">通知 <strong>{{ runtime_diagnostics.notification_mode }}</strong></span>
+          <span class="compact-status-item">自动监控 <strong>{{ "已暂停" if runtime_diagnostics.auto_monitoring_paused else ("运行中" if runtime_diagnostics.auto_monitoring_enabled else "已关闭") }}</strong></span>
+          <span class="compact-status-item">阻塞 <strong>{{ preflight_checks.blocked_count }}</strong></span>
+          <span class="compact-status-item">警告 <strong>{{ preflight_checks.warning_count }}</strong></span>
+        </div>
+        <div class="compact-status-group notification-delivery-summary" aria-label="飞书通知投递状态">
+          <span class="compact-status-heading">飞书投递</span>
+          <span class="compact-status-item">待发送 <strong>{{ notification_delivery_summary.pending }}</strong></span>
+          <span class="compact-status-item">重试中 <strong>{{ notification_delivery_summary.retrying }}</strong></span>
+          <span class="compact-status-item">最终失败 <strong>{{ notification_delivery_summary.failed }}</strong></span>
+          <span class="compact-status-item">通道 <span class="badge {% if notification_delivery_summary.channel_status == '正常' %}text-bg-success{% elif notification_delivery_summary.channel_status == '重试中' %}text-bg-warning{% else %}text-bg-danger{% endif %}">{{ notification_delivery_summary.channel_status }}</span></span>
+        </div>
+      </div>
+      <div class="compact-status-actions" aria-label="监控操作">
+        {% if monitor_status.auto_monitoring_paused %}
+          <form method="post" action="{{ url_for('dashboard.resume_monitor') }}">
+            <button class="btn btn-sm btn-success status-action-button" type="submit">恢复自动监控</button>
+          </form>
+        {% else %}
+          <form method="post" action="{{ url_for('dashboard.pause_monitor') }}">
+            <button class="btn btn-sm btn-outline-warning status-action-button" type="submit">暂停自动监控</button>
+          </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('dashboard.test_notification') }}">
+          {% if runtime_diagnostics.notification_mode == "feishu" %}
+            <button class="btn btn-sm btn-outline-primary status-action-button" type="submit">测试飞书通知</button>
+          {% elif runtime_diagnostics.notification_mode == "dry_run" %}
+            <button class="btn btn-sm btn-outline-primary status-action-button" type="submit">预览测试通知</button>
+          {% elif runtime_diagnostics.notification_mode == "off" %}
+            <button class="btn btn-sm btn-outline-secondary status-action-button" type="submit">通知已关闭</button>
+          {% elif runtime_diagnostics.notification_mode == "wecom_placeholder" %}
+            <button class="btn btn-sm btn-outline-secondary status-action-button" type="submit">企业微信占位</button>
+          {% else %}
+            <button class="btn btn-sm btn-outline-secondary status-action-button" type="submit">测试通知</button>
+          {% endif %}
+        </form>
+        <a class="btn btn-sm btn-outline-secondary status-action-button" href="#runtime-diagnostics">查看诊断</a>
+      </div>
+      {% if preflight_checks.blocked_count > 0 or preflight_checks.warning_count > 0 %}
+      <div class="compact-status-blocker">
+        {% if preflight_checks.blocked_count > 0 %}
+          <details class="compact-blocker-details">
+            <summary><span>当前有 {{ preflight_checks.blocked_count }} 项阻塞</span><span class="compact-blocker-link">查看原因</span></summary>
+            <div class="compact-blocker-reasons">
+              {% for check in preflight_checks.checks if check.status == "blocked" %}
+                <div><strong>{{ check.title }}</strong>：{{ check.message }}</div>
+              {% endfor %}
+            </div>
+          </details>
+        {% elif preflight_checks.warning_count > 0 %}
+          <span class="badge text-bg-warning status-check-badge">当前有 {{ preflight_checks.warning_count }} 项警告</span>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="dashboard-card task-panel runtime-overview-panel mb-3">
+    <details class="diagnostic-details runtime-controls-details">
+      <summary>轮询与交易时段设置</summary>
+      <div class="runtime-controls-body">
+      <div class="dashboard-refresh-controls" data-auto-refresh-interval="60">
+        <span>上次刷新：<time id="dashboardLastRefresh">--</time></span>
+        <button class="btn btn-sm btn-outline-secondary dashboard-refresh-now" id="dashboardRefreshNow" type="button">
+          立即刷新
+        </button>
+        <label class="dashboard-auto-refresh-toggle" for="dashboardAutoRefreshToggle">
+          <input class="form-check-input m-0" id="dashboardAutoRefreshToggle" type="checkbox">
+          <span>自动刷新</span>
+        </label>
+        <span class="dashboard-refresh-countdown" id="dashboardAutoRefreshCountdown">下次刷新：--</span>
+      </div>
+      <div class="monitor-poll-setting">
+        <span class="fw-semibold">当前轮询间隔：{{ monitor_poll_interval_seconds }} 秒</span>
+        <form class="monitor-poll-setting-form" method="post" action="{{ url_for('dashboard.update_monitor_poll_interval') }}">
+          <label class="visually-hidden" for="pollIntervalSeconds">选择轮询间隔</label>
+          <select class="form-select form-select-sm" id="pollIntervalSeconds" name="poll_interval_seconds">
+            {% for option in monitor_poll_interval_options %}
+              <option value="{{ option }}" {% if option == monitor_poll_interval_seconds %}selected{% endif %}>{{ option }} 秒</option>
+            {% endfor %}
+          </select>
+          <button class="btn btn-sm btn-outline-primary action-button monitor-poll-setting-button" type="submit">更新间隔</button>
+        </form>
+        <span class="text-secondary">自动监控开启后生效；修改后从下一轮轮询开始使用。</span>
+      </div>
+      <div class="market-poll-summary">
+        <span class="fw-semibold">最近行情轮询</span>
+        <span class="badge {{ market_poll_summary_view.badge_class }}">{{ market_poll_summary_view.label }}</span>
+        <span>成功 {{ market_poll_summary_view.success_count }} / 失败 {{ market_poll_summary_view.failure_count }} / 等待 {{ market_poll_summary_view.waiting_count }}</span>
+        {% if runtime_diagnostics.last_market_contract_code %}
+          <span>
+            合约：
+            {{ runtime_diagnostics.last_market_contract_code }}
+            {% if runtime_diagnostics.last_market_resolved_code and runtime_diagnostics.last_market_resolved_code != runtime_diagnostics.last_market_contract_code %}
+              → {{ runtime_diagnostics.last_market_resolved_code }}
+            {% endif %}
+          </span>
+        {% endif %}
+        {% if runtime_diagnostics.last_market_price is not none %}
+          <span>价格：{{ "%.2f"|format(runtime_diagnostics.last_market_price) }}</span>
+        {% endif %}
+        {% if runtime_diagnostics.last_market_success_at %}
+          <span>时间：{{ runtime_diagnostics.last_market_success_at | china_time }}</span>
+        {% elif runtime_diagnostics.last_market_failure_at %}
+          <span>时间：{{ runtime_diagnostics.last_market_failure_at | china_time }}</span>
+        {% endif %}
+        <span>连续失败：{{ runtime_diagnostics.consecutive_market_failures or 0 }}</span>
+        {% if runtime_diagnostics.last_market_error_summary %}
+          <span class="text-danger">错误：{{ runtime_diagnostics.last_market_error_summary }}</span>
+        {% endif %}
+      </div>
+
+      <div class="auto-session-summary" id="auto-session-scheduler">
+        <span class="fw-semibold">自动交易时段</span>
+        <span class="badge {% if session_schedule.enabled %}text-bg-success{% else %}text-bg-secondary{% endif %}">
+          {{ "开启" if session_schedule.enabled else "关闭" }}
+        </span>
+        <span class="badge {% if session_schedule.session_state_key in ['day_morning', 'day_afternoon', 'night'] %}text-bg-success{% elif session_schedule.session_state_key == 'midday_break' %}text-bg-info{% else %}text-bg-secondary{% endif %}">
+          {{ session_schedule.session_state_title }}
+        </span>
+        <span>当前北京时间：{{ session_schedule.now.strftime("%Y-%m-%d %H:%M") }}</span>
+        <span>日盘 {{ session_schedule.day_morning_start.strftime("%H:%M") }}-{{ session_schedule.day_morning_stop.strftime("%H:%M") }} / {{ session_schedule.day_afternoon_start.strftime("%H:%M") }}-{{ session_schedule.day_afternoon_stop.strftime("%H:%M") }}</span>
+        {% if session_schedule.session_state_key == "midday_break" %}
+          <span>预计 {{ session_schedule.next_action.at.strftime("%H:%M") }} 自动恢复</span>
+        {% endif %}
+        <span>夜盘 {{ session_schedule.night_session_start.strftime("%H:%M") }} 开始</span>
+        {% if session_schedule.night_available %}
+          <span>计划夜盘暂停：{{ session_schedule.night_close_time.strftime("%H:%M") }}</span>
+        {% else %}
+          <span>当前启用任务无夜盘品种</span>
+        {% endif %}
+        <span>控制来源：
+          {% if runtime_diagnostics.auto_monitoring_control_source == "schedule" %}自动时段
+          {% elif runtime_diagnostics.auto_monitoring_control_source == "manual_override" %}手动临时覆盖
+          {% else %}纯手动{% endif %}
+        </span>
+        {% if session_schedule.manual_override_until %}
+          <span>覆盖至 {{ session_schedule.manual_override_until.strftime("%m-%d %H:%M") }}</span>
+        {% endif %}
+        <span>下一次：{{ session_schedule.next_action.at.strftime("%m-%d %H:%M") }} {{ session_schedule.next_action.action }}</span>
+      </div>
+
+      <details class="diagnostic-details auto-session-details">
+        <summary>配置自动交易时段</summary>
+        <div class="status-detail-body">
+          <form class="auto-session-settings-form" method="post" action="{{ url_for('dashboard.update_auto_session_scheduler') }}">
+            <label class="auto-session-enable-toggle" for="autoSessionSchedulerEnabled">
+              <input class="form-check-input m-0" id="autoSessionSchedulerEnabled" name="auto_session_scheduler_enabled" type="checkbox" {% if session_schedule.enabled %}checked{% endif %}>
+              <span>开启自动交易时段</span>
+            </label>
+            <label>
+              <span>上午开始</span>
+              <input class="form-control form-control-sm" name="day_session_start" type="time" value="{{ session_schedule.day_session_start.strftime('%H:%M') }}" required>
+            </label>
+            <label>
+              <span>上午暂停</span>
+              <input class="form-control form-control-sm" name="day_morning_stop" type="time" value="{{ session_schedule.day_morning_stop.strftime('%H:%M') }}" required>
+            </label>
+            <label>
+              <span>下午恢复</span>
+              <input class="form-control form-control-sm" name="day_afternoon_start" type="time" value="{{ session_schedule.day_afternoon_start.strftime('%H:%M') }}" required>
+            </label>
+            <label>
+              <span>下午暂停</span>
+              <input class="form-control form-control-sm" name="day_session_stop" type="time" value="{{ session_schedule.day_session_stop.strftime('%H:%M') }}" required>
+            </label>
+            <label>
+              <span>夜盘开始</span>
+              <input class="form-control form-control-sm" name="night_session_start" type="time" value="{{ session_schedule.night_session_start.strftime('%H:%M') }}" required>
+            </label>
+            <label>
+              <span>夜盘缓冲（分钟）</span>
+              <input class="form-control form-control-sm" name="night_close_buffer_minutes" type="number" min="5" max="30" value="{{ session_schedule.night_close_buffer_minutes }}" required>
+            </label>
+            <details class="auto-session-advanced-settings">
+              <summary>高级设置</summary>
+              <div class="auto-session-advanced-body">
+                <label class="auto-session-overrides-field">
+                  <span>品种时段覆盖（可选）</span>
+                  <textarea class="form-control form-control-sm" name="trading_session_overrides" rows="2" placeholder="XX.CZC=23:00&#10;LC.GFE=NO_NIGHT">{{ session_schedule.trading_session_overrides }}</textarea>
+                </label>
+                <p class="small text-secondary mb-0">仅用于修正未识别品种或临时覆盖内置交易时段，正常情况下无需填写。</p>
+                <p class="small text-secondary mb-0">格式：<code>PRODUCT.EXCHANGE=HH:MM</code> 或 <code>PRODUCT.EXCHANGE=NO_NIGHT</code></p>
+              </div>
+            </details>
+            <button class="btn btn-sm btn-outline-primary action-button" type="submit">保存时段设置</button>
+          </form>
+          <p class="small text-secondary mb-3">日盘午间休盘期间只暂停行情轮询，不关闭网站或后台 worker；10:15-10:30 短休第一版仍保持轮询。</p>
+          <div class="auto-session-contracts">
+            <div class="small fw-semibold">已启用合约识别</div>
+            {% for item in session_schedule.contract_sessions %}
+              <div class="auto-session-contract-row">
+                <span class="fw-semibold">{{ item.code }}</span>
+                <span class="badge {% if item.status == 'night' %}text-bg-primary{% elif item.status == 'no_night' %}text-bg-secondary{% else %}text-bg-warning{% endif %}">
+                  {% if item.status in ["night", "override"] %}夜盘至 {{ item.night_end.strftime("%H:%M") }}{% elif item.status in ["no_night", "override_no_night"] %}无夜盘{% else %}交易时段未识别{% endif %}
+                </span>
+                <span class="text-secondary">{{ item.message }}</span>
+              </div>
+            {% else %}
+              <div class="small text-secondary">当前没有启用任务。</div>
+            {% endfor %}
+          </div>
+          {% if session_schedule.latest_night_contract %}
+            <p class="small text-secondary mb-1">
+              最晚夜盘品种：{{ session_schedule.latest_night_contract }}（至 {{ session_schedule.latest_night_end.strftime("%H:%M") }}），加 {{ session_schedule.night_close_buffer_minutes }} 分钟缓冲后于 {{ session_schedule.night_close_time.strftime("%H:%M") }} 暂停。
+            </p>
+          {% endif %}
+          {% if session_schedule.unknown_contracts %}
+            <p class="small text-warning-emphasis mb-1">
+              未识别品种采用 {{ session_schedule.night_close_time.strftime("%H:%M") }} 安全兜底，请在交易时段表补充确认后的规则。
+            </p>
+          {% endif %}
+          <p class="small text-secondary mb-0">
+            第一版仅自动跳过周末；法定节假日和节前无夜盘尚未接入正式交易日历，仍请手动暂停。自动暂停只停止行情轮询，不会停止网站、Gunicorn、systemd 或 ECS。
+          </p>
+        </div>
+      </details>
+
+      <details class="diagnostic-details runtime-details status-detail">
+        <summary>查看运行建议与检查顺序</summary>
+        <div class="status-detail-body">
+          <div class="runtime-details-grid">
+            <div class="runtime-details-section">
+              <h4 class="runtime-details-title">当前运行模式建议</h4>
+              <p class="small mb-2">{{ live_mode_status.live_mode_message }}</p>
+              <ul class="runtime-compact-list">
+                {% for suggestion in live_mode_status.live_mode_suggestions %}
+                  <li>{{ suggestion }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+
+            <div class="runtime-details-section">
+              <h4 class="runtime-details-title">预检提示与建议</h4>
+              {% if rehearsal_status.blockers %}
+                <div class="small fw-semibold text-danger mb-1">阻塞项</div>
+                <ul class="runtime-compact-list">
+                  {% for blocker in rehearsal_status.blockers %}
+                    <li>{{ blocker }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              {% if rehearsal_status.warnings %}
+                <div class="small fw-semibold text-warning mb-1">风险提醒</div>
+                <ul class="runtime-compact-list">
+                  {% for warning in rehearsal_status.warnings %}
+                    <li>{{ warning }}</li>
+                  {% endfor %}
+                </ul>
+              {% endif %}
+              <div class="small fw-semibold text-secondary mb-1">建议</div>
+              <ul class="runtime-compact-list">
+                {% for suggestion in rehearsal_status.suggestions %}
+                  <li>{{ suggestion }}</li>
+                {% endfor %}
+              </ul>
+            </div>
+          </div>
+
+          <div class="runtime-details-section live-config-details">
+            <h4 class="runtime-details-title live-config-title">正式运行配置建议</h4>
+            <p class="small text-secondary mb-2">
+              本地真实演练手册已保存到 <code>docs/local_rehearsal_runbook.md</code>。
+            </p>
+            <div class="small fw-semibold text-secondary mb-1">正式盯盘推荐配置</div>
+            <ul class="live-config-list">
+              <li><strong>行情模式：</strong>iFind 真实行情</li>
+              <li><strong>自动监控：</strong>启动时启用，运行时未暂停</li>
+              <li><strong>通知模式：</strong>飞书真实通知</li>
+              <li><strong>合约后缀：</strong>按交易所配置，例如上期所合约使用 .SHF</li>
+              <li><strong>实时行情指标：</strong>latest</li>
+            </ul>
+            <p class="live-config-note">
+              需要你在本地安全确认：iFind 刷新授权已配置；飞书机器人地址已配置；如启用签名，飞书签名密钥已配置。
+            </p>
+            <p class="live-config-note muted">
+              本区域只提供配置指导，不会显示任何真实令牌、飞书机器人地址或密钥。
+            </p>
+          </div>
+
+          <div class="runtime-details-section rehearsal-details">
+            <h4 class="runtime-details-title">检查顺序</h4>
+            <ol class="rehearsal-checklist">
+              {% for item in rehearsal_status.checklist %}
+                <li>{{ item }}</li>
+              {% endfor %}
+            </ol>
+          </div>
+        </div>
+      </details>
+      </div>
+    </details>
+  </section>
+
+  <section class="dashboard-card table-card task-panel mb-3 dashboard-primary-tasks">
+    <div class="dashboard-card-header">
+      <div>
+        <h2 class="dashboard-section-title">监控任务列表</h2>
+        <div class="dashboard-section-subtitle">当前网格基准价、上下沿和任务状态</div>
+      </div>
+      <span class="status-pill">启用 {{ active_task_count }} / 共 {{ tasks|length }}</span>
+    </div>
+    <div class="table-responsive">
+      <table class="table align-middle mb-0 task-table">
+        <thead>
+          <tr>
+            <th scope="col">合约代码</th>
+            <th scope="col">当前基准价</th>
+            <th scope="col">网格间距</th>
+            <th scope="col">下沿价格</th>
+            <th scope="col">上沿价格</th>
+            <th scope="col">状态</th>
+            <th scope="col">行情状态</th>
+            <th scope="col">最后更新时间（北京时间）</th>
+            <th scope="col" class="text-end">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for task in tasks %}
+            <tr>
+              <td>
+                <span class="fw-semibold">{{ task.code }}</span>
+              </td>
+              <td>{{ "%.2f"|format(task.base_price) }}</td>
+              <td>{{ "%.2f"|format(task.threshold) }}</td>
+              <td>{{ "%.2f"|format(task.base_price - task.threshold) }}</td>
+              <td>{{ "%.2f"|format(task.base_price + task.threshold) }}</td>
+              <td>
+                <form method="post" action="{{ url_for('dashboard.toggle_task', task_id=task.id) }}">
+                  <button class="badge border-0 rounded-pill status-badge {% if task.is_active %}text-bg-success{% else %}text-bg-secondary{% endif %}" type="submit">
+                    {% if task.is_active %}启用{% else %}停用{% endif %}
+                  </button>
+                </form>
+              </td>
+              <td>
+                {% set market_status = task_market_status_view[task.id] %}
+                <div class="task-market-status">
+                  <span class="badge {{ market_status.badge_class }}">{{ market_status.label }}</span>
+                  {% if market_status.note %}
+                    <span>{{ market_status.note }}</span>
+                  {% endif %}
+                  {% if market_status.price is not none %}
+                    <span>价格 {{ "%.2f"|format(market_status.price) }}</span>
+                  {% endif %}
+                  {% if market_status.checked_at %}
+                    {% set market_checked_at_full = market_status.checked_at | china_time %}
+                    <span title="{{ market_checked_at_full }}">{{ market_checked_at_full[11:] }}</span>
+                  {% endif %}
+                  {% if market_status.consecutive_failures %}
+                    <span>连续失败 {{ market_status.consecutive_failures }}</span>
+                  {% endif %}
+                  {% if market_status.error %}
+                    <span class="task-market-error" title="{{ market_status.error }}">{{ market_status.error_label }}：{{ market_status.error }}</span>
+                  {% endif %}
+                </div>
+              </td>
+              {% set task_updated_at_full = task.updated_at | china_time %}
+              <td class="text-secondary task-updated-at" title="{{ task_updated_at_full }}">{{ task_updated_at_full[11:] }}</td>
+              <td>
+                <div class="task-actions">
+                  <a
+                    class="btn btn-sm btn-outline-secondary action-button"
+                    href="{{ url_for('dashboard.index', contract_code=task.code) }}#alert-history"
+                  >
+                    查看报警
+                  </a>
+                  <button
+                    class="btn btn-sm btn-outline-dark action-button"
+                    type="button"
+                    data-bs-toggle="modal"
+                    data-bs-target="#editTaskModal{{ task.id }}"
+                  >
+                    编辑
+                  </button>
+                  <details class="task-action-menu" data-task-action-menu>
+                    <summary>测试</summary>
+                    <div class="task-action-menu-content">
+                      <button
+                        class="btn btn-sm btn-outline-primary task-action-menu-item action-button"
+                        type="button"
+                        data-bs-toggle="modal"
+                        data-bs-target="#testPriceModal{{ task.id }}"
+                      >
+                        测试价格
+                      </button>
+                      <form method="post" action="{{ url_for('dashboard.test_ifind_quote', task_id=task.id) }}">
+                        <button class="btn btn-sm btn-outline-info task-action-menu-item action-button" type="submit">测试 iFind 行情</button>
+                      </form>
+                    </div>
+                  </details>
+                  <form method="post" action="{{ url_for('dashboard.delete_task', task_id=task.id) }}" onsubmit="return confirm('确认删除该监控任务？');">
+                    <button class="btn btn-sm btn-outline-danger action-button" type="submit">删除</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="9" class="text-center text-secondary py-5">
+                暂无监控任务
+                <div class="mt-3">
+                    <button class="btn btn-sm btn-dark action-button" type="button" data-bs-toggle="modal" data-bs-target="#addTaskModal">
+                    新增任务
+                  </button>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <nav class="dashboard-tabs dashboard-card mb-4" aria-label="Dashboard 快捷区域">
+    <a class="dashboard-tab is-active" href="#dashboard-overview">
+      <span class="dashboard-tab-mark" aria-hidden="true"></span>
+      监控大盘总览
+    </a>
+    <a class="dashboard-tab" href="#alert-history">
+      历史报警日志
+      <span class="dashboard-tab-badge">{{ alert_history.total_count }}</span>
+    </a>
+    <a class="dashboard-tab" href="#runtime-diagnostics">
+      系统状态与诊断
+      {% if preflight_checks.blocked_count > 0 or preflight_checks.warning_count > 0 %}
+        <span class="dashboard-tab-dot" aria-hidden="true"></span>
+      {% endif %}
+    </a>
+    <a class="dashboard-tab" href="#ops-settings">
+      运维设置
+    </a>
+  </nav>
+
+  <section class="dashboard-card task-panel mb-4" id="ops-settings">
+    <div class="dashboard-card-header">
+      <div>
+        <h2 class="dashboard-section-title">iFind 授权设置</h2>
+        <div class="dashboard-section-subtitle">只显示配置状态，不显示 refresh token 原文</div>
+      </div>
+      <span class="badge {% if ifind_auth_settings.refresh_token_configured %}text-bg-success{% else %}text-bg-warning{% endif %}">
+        {{ "已配置" if ifind_auth_settings.refresh_token_configured else "未配置" }}
+      </span>
+    </div>
+    <div class="p-3 border-bottom">
+      <div class="d-flex flex-wrap gap-3 small text-secondary">
+        <span>iFind refresh token：<span class="fw-semibold text-body">{{ "已配置" if ifind_auth_settings.refresh_token_configured else "未配置" }}</span></span>
+        <span>账号到期日：<span class="fw-semibold text-body">{{ ifind_auth_settings.account_expire_date or "未设置" }}</span></span>
+        <span>权限更新日：<span class="fw-semibold text-body">{{ ifind_auth_settings.token_renew_day or "未设置" }}</span></span>
+      </div>
+    </div>
+    <form class="p-3" method="post" action="{{ url_for('dashboard.update_ifind_auth_settings') }}" autocomplete="off">
+      <div class="row g-2 align-items-end">
+        <div class="col-12 col-lg-4">
+          <label class="form-label small text-secondary" for="ifindRefreshTokenInput">新 iFind refresh token</label>
+          <input class="form-control form-control-sm" id="ifindRefreshTokenInput" name="ifind_refresh_value" type="password" required autocomplete="new-password" placeholder="保存后不会在页面显示">
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label small text-secondary" for="ifindAccountExpireDateInput">账号到期日</label>
+          <input class="form-control form-control-sm" id="ifindAccountExpireDateInput" name="ifind_account_expire_date" value="{{ ifind_auth_settings.account_expire_date }}" placeholder="YYYY-MM-DD">
+        </div>
+        <div class="col-6 col-lg-2">
+          <label class="form-label small text-secondary" for="ifindTokenRenewDayInput">权限更新日</label>
+          <input class="form-control form-control-sm" id="ifindTokenRenewDayInput" name="ifind_token_renew_day" value="{{ ifind_auth_settings.token_renew_day }}" placeholder="例如 22">
+        </div>
+        <div class="col-12 col-lg-2">
+          <label class="form-label small text-secondary" for="dashboardPasswordConfirmInput">Dashboard 密码确认</label>
+          <input class="form-control form-control-sm" id="dashboardPasswordConfirmInput" name="dashboard_password" type="password" autocomplete="current-password" {% if config.DASHBOARD_AUTH_ENABLED %}required{% endif %}>
+        </div>
+        <div class="col-12 col-lg-2">
+          <button class="btn btn-sm btn-outline-primary action-button w-100" type="submit">保存授权设置</button>
+        </div>
+      </div>
+      <div class="small text-secondary mt-2">
+        保存前会备份服务器当前环境文件；保存后请点击任务行里的“测试 iFind 行情”确认授权。
+      </div>
+    </form>
+  </section>
+
+  <section class="dashboard-card task-panel mb-4 preflight-panel">
+    <details class="diagnostic-details preflight-details">
+      <summary>
+        <span>运行前检查</span>
+        <span class="preflight-summary-counts">
+          阻塞 {{ preflight_checks.blocked_count }} ｜警告 {{ preflight_checks.warning_count }}
+        </span>
+      </summary>
+      <div class="preflight-compact-body">
+      <div class="d-flex flex-wrap gap-2 gap-md-3 mb-2 small">
+        <div>通过：<span class="fw-semibold">{{ preflight_checks.ready_count }}</span></div>
+        <div>警告：<span class="fw-semibold">{{ preflight_checks.warning_count }}</span></div>
+        <div>阻塞：<span class="fw-semibold">{{ preflight_checks.blocked_count }}</span></div>
+      </div>
+      {% if preflight_checks.blocked_count == 0 and preflight_checks.warning_count == 0 %}
+        <div class="text-success fw-semibold">运行前检查通过。</div>
+      {% else %}
+        <div class="preflight-issue-summary">
+          <div class="preflight-issue-line">
+            <span class="badge text-bg-danger compact-issue-badge">阻塞</span>
+            {% set has_blocked = false %}
+            {% for check in preflight_checks.checks if check.status == "blocked" %}
+              {% set has_blocked = true %}
+              <span class="preflight-issue-text"><span class="fw-semibold">{{ check.title }}</span>：{{ check.message }}</span>{% if not loop.last %}<span class="text-secondary">；</span>{% endif %}
+            {% else %}
+              <span class="text-secondary small">无阻塞项</span>
+            {% endfor %}
+          </div>
+          <div class="preflight-issue-line">
+            <span class="badge text-bg-warning compact-issue-badge">警告</span>
+            {% for check in preflight_checks.checks if check.status == "warning" %}
+              <span class="preflight-issue-text"><span class="fw-semibold">{{ check.title }}</span>：{{ check.message }}</span>{% if not loop.last %}<span class="text-secondary">；</span>{% endif %}
+            {% else %}
+              <span class="text-secondary small">无警告项</span>
+            {% endfor %}
+          </div>
+        </div>
+      {% endif %}
+      </div>
+      <details class="diagnostic-details preflight-full-details">
+      <summary>展开全部检查</summary>
+      <div class="table-responsive">
+        <table class="table align-middle mb-0 task-table">
+          <thead>
+            <tr>
+              <th scope="col">类别</th>
+              <th scope="col">检查项</th>
+              <th scope="col">状态</th>
+              <th scope="col">说明</th>
+              <th scope="col">建议</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for check in preflight_checks.checks %}
+              {% set check_view = preflight_view.status_map[check.status] %}
+              <tr>
+                <td class="text-secondary">{{ check.category }}</td>
+                <td class="fw-semibold">{{ check.title }}</td>
+                <td><span class="badge {{ check_view.badge_class }}">{{ check_view.label }}</span></td>
+                <td>{{ check.message }}</td>
+                <td class="text-secondary">{{ check.suggestion }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      </details>
+    </details>
+  </section>
+
+  <section class="dashboard-card alert-card task-panel mt-4" id="alert-history">
+    {% set clear_contract_code = alert_history.filters.contract_code %}
+    <div class="dashboard-card-header alert-history-header">
+      <div>
+        <h2 class="dashboard-section-title">历史报警日志</h2>
+        <div class="dashboard-section-subtitle">报警历史分页、筛选和通知预览</div>
+      </div>
+      <form
+        class="alert-clear-history-form"
+        method="post"
+        action="{{ url_for('dashboard.clear_alerts') }}"
+        {% if clear_contract_code %}
+          onsubmit="return confirm('确定要清空 {{ clear_contract_code }} 的报警历史记录吗？此操作不可撤销。');"
+        {% else %}
+          onsubmit="return confirm('确定要清空全部报警历史记录吗？此操作不会删除监控任务，但不可撤销。');"
+        {% endif %}
+      >
+        {% if clear_contract_code %}
+          <input type="hidden" name="contract_code" value="{{ clear_contract_code }}">
+          <button class="btn btn-sm btn-outline-danger action-button" type="submit" title="仅清空 {{ clear_contract_code }}">清空当前合约历史</button>
+        {% else %}
+          <button class="btn btn-sm btn-outline-danger action-button" type="submit">清空全部历史</button>
+        {% endif %}
+      </form>
+    </div>
+    <div class="px-3 py-2 border-bottom filter-card">
+      <div class="d-flex flex-wrap align-items-center gap-2 small">
+        <span class="text-secondary">快捷合约：</span>
+        <a
+            class="btn btn-sm action-button {% if not alert_history.filters.contract_code %}btn-dark{% else %}btn-outline-secondary{% endif %}"
+          href="{{ url_for('dashboard.index', **alert_history.all_contract_args) }}#alert-history"
+          data-alert-history-jump
+        >
+          全部
+        </a>
+        {% for contract in alert_history.quick_contract_links %}
+          <a
+            class="btn btn-sm action-button {% if alert_history.filters.contract_code == contract.code %}btn-dark{% else %}btn-outline-secondary{% endif %}"
+            href="{{ url_for('dashboard.index', **contract.args) }}#alert-history"
+            data-alert-history-jump
+          >
+            {{ contract.code }}
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+    <form class="alert-filter-form filter-card border-bottom p-3" method="get" action="{{ url_for('dashboard.index') }}#alert-history" data-alert-history-jump>
+      <div class="row g-2 alert-filter-fields">
+        <div class="col-12 col-md-6 col-xl-3">
+          <label class="form-label small text-secondary" for="contractCodeFilter">合约代码</label>
+          <input class="form-control form-control-sm" id="contractCodeFilter" name="contract_code" value="{{ alert_history.filters.contract_code }}" placeholder="CU2608">
+        </div>
+        <div class="col-6 col-md-3 col-xl-1">
+          <label class="form-label small text-secondary" for="directionFilter">方向</label>
+          <select class="form-select form-select-sm" id="directionFilter" name="direction">
+            <option value="" {% if not alert_history.filters.direction %}selected{% endif %}>全部</option>
+            <option value="up" {% if alert_history.filters.direction|lower == "up" or alert_history.filters.direction == "上涨" %}selected{% endif %}>上涨</option>
+            <option value="down" {% if alert_history.filters.direction|lower == "down" or alert_history.filters.direction == "下跌" %}selected{% endif %}>下跌</option>
+          </select>
+        </div>
+        <div class="col-6 col-md-3 col-xl-1">
+          <label class="form-label small text-secondary" for="deliveryStatusFilter">送达</label>
+          <select class="form-select form-select-sm" id="deliveryStatusFilter" name="delivery_status">
+            <option value="all" {% if alert_history.filters.delivery_status == "all" %}selected{% endif %}>全部</option>
+            <option value="undelivered" {% if alert_history.filters.delivery_status == "undelivered" %}selected{% endif %}>未送达</option>
+          </select>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+          <label class="form-label small text-secondary" for="alertTypeFilter">类型</label>
+          <select class="form-select form-select-sm" id="alertTypeFilter" name="alert_type">
+            <option value="all" {% if alert_history.filters.alert_type == "all" %}selected{% endif %}>全部</option>
+            <option value="burst" {% if alert_history.filters.alert_type == "burst" %}selected{% endif %}>高频报警</option>
+            <option value="severe" {% if alert_history.filters.alert_type == "severe" %}selected{% endif %}>剧烈波动</option>
+            <option value="duplicate_skipped" {% if alert_history.filters.alert_type == "duplicate_skipped" %}selected{% endif %}>重复跳过</option>
+          </select>
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+          <label class="form-label small text-secondary" for="dateFromFilter">起始日期</label>
+          <input class="form-control form-control-sm" id="dateFromFilter" name="date_from" type="date" value="{{ alert_history.filters.date_from }}">
+        </div>
+        <div class="col-6 col-md-4 col-xl-2">
+          <label class="form-label small text-secondary" for="dateToFilter">结束日期</label>
+          <input class="form-control form-control-sm" id="dateToFilter" name="date_to" type="date" value="{{ alert_history.filters.date_to }}">
+        </div>
+        <div class="col-6 col-md-3 col-xl-1">
+          <label class="form-label small text-secondary" for="perPageFilter">每页</label>
+          <select class="form-select form-select-sm" id="perPageFilter" name="alert_per_page">
+            {% for option in alert_history.per_page_options %}
+              <option value="{{ option }}" {% if alert_history.per_page == option %}selected{% endif %}>{{ option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="alert-filter-actions">
+        <button class="btn btn-sm btn-dark action-button" type="submit">筛选</button>
+        <a class="btn btn-sm btn-outline-secondary action-button" href="{{ url_for('dashboard.index') }}#alert-history" data-alert-history-jump>清除筛选</a>
+        <a class="btn btn-sm btn-outline-primary action-button" href="{{ url_for('dashboard.export_alerts_csv', **alert_history.export_args) }}">导出 CSV</a>
+      </div>
+      <div class="alert-filter-summary small text-secondary">
+        当前显示第 {{ alert_history.page }} 页 / 共 {{ alert_history.total_pages }} 页，共 {{ alert_history.total_count }} 条报警，每页 {{ alert_history.per_page }} 条。
+        <span class="ms-md-2">
+          当前筛选：
+          合约 {{ alert_history.filter_summary.contract }}｜
+          方向 {{ alert_history.filter_summary.direction }}｜
+          类型 {{ alert_history.filter_summary.alert_type }}｜
+          送达 {{ alert_history.filter_summary.delivery_status }}｜
+          日期 {{ alert_history.filter_summary.date }}。
+        </span>
+      </div>
+    </form>
+    <div class="table-responsive">
+      <table class="table align-middle mb-0 task-table alert-history-table">
+        <thead>
+          <tr>
+            <th scope="col">时间</th>
+            <th scope="col">合约</th>
+            <th scope="col">方向</th>
+            <th scope="col">当前价格</th>
+            <th scope="col">差值</th>
+            <th scope="col">网格数</th>
+            <th scope="col">投递状态</th>
+            <th scope="col" class="alert-actions-header">操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for alert in alert_logs %}
+            {% set delivery_view = alert_delivery_views[alert.id] %}
+            {% set delivery = delivery_view.delivery %}
+            <tr class="alert-main-row">
+              <td class="text-secondary text-nowrap" data-label="时间">{{ alert.created_at | china_time }}</td>
+              <td data-label="合约">
+                <span class="fw-semibold">{{ alert.code }}</span>
+              </td>
+              <td data-label="方向">
+                {% if alert.direction == "UP" %}
+                  <span class="alert-direction-badge alert-direction-up">↗ 上涨</span>
+                {% elif alert.direction == "DOWN" %}
+                  <span class="alert-direction-badge alert-direction-down">↘ 下跌</span>
+                {% else %}
+                  <span class="badge rounded-pill text-bg-secondary">{{ alert.direction }}</span>
+                {% endif %}
+              </td>
+              <td data-label="当前价格" class="alert-current-price">{{ "%.2f"|format(alert.current_price) }}</td>
+              <td data-label="差值" class="alert-diff-value {% if alert.diff is not none and alert.diff > 0 %}alert-diff-positive{% elif alert.diff is not none and alert.diff < 0 %}alert-diff-negative{% else %}alert-diff-neutral{% endif %}">
+                {{ "%+.2f"|format(alert.diff) }}
+              </td>
+              <td data-label="网格数"><span class="grid-step-badge">{{ alert.grid_steps }}</span></td>
+              <td data-label="投递状态" class="notification-delivery-cell">
+                <span class="badge text-bg-{{ delivery_view.class }} notification-delivery-badge" title="{{ delivery_view.title }}">{{ delivery_view.label }}</span>
+              </td>
+              <td data-label="操作" class="alert-actions-cell">
+                <button class="btn btn-sm btn-outline-secondary alert-detail-toggle-btn action-button" type="button" data-alert-details-target="alertDetails{{ alert.id }}" aria-expanded="false">查看详情</button>
+                <button
+                  class="btn btn-sm btn-outline-secondary alert-preview-open-btn action-button"
+                  type="button"
+                  data-dialog-target="notificationPreviewDialog{{ alert.id }}"
+                >
+                  查看通知预览
+                </button>
+              </td>
+            </tr>
+            <tr class="alert-details-row" id="alertDetails{{ alert.id }}" hidden>
+              <td colspan="8" class="alert-details-cell">
+                <div class="alert-detail-grid">
+                  <div><span>旧基准价</span><strong>{{ "%.2f"|format(alert.old_base_price) }}</strong></div>
+                  <div><span>新基准价</span><strong>{{ "%.2f"|format(alert.new_base_price) }}</strong></div>
+                  <div><span>网格间距</span><strong>{{ "%.2f"|format(alert.threshold) }}</strong></div>
+                  <div><span>报警编号</span><strong>{{ delivery_view.alert_number }}</strong></div>
+                  {% if delivery %}
+                    <div><span>飞书投递次数</span><strong>{{ delivery.attempt_count }}/{{ delivery.max_attempts }}</strong></div>
+                    <div><span>最近投递时间</span><strong>{{ delivery.last_attempt_at | china_time if delivery.last_attempt_at else "暂无" }}</strong></div>
+                    <div class="alert-detail-wide"><span>最近安全错误摘要</span><strong>{{ delivery.last_error_message if delivery.last_error_message else "无" }}</strong></div>
+                  {% endif %}
+                  <div class="alert-detail-wide"><span>报警描述</span><strong>{{ alert.message }}</strong></div>
+                  <div class="alert-detail-wide"><span>主行摘要</span><strong>{{ "向上" if alert.direction == "UP" else "向下" if alert.direction == "DOWN" else alert.direction }}突破 {{ alert.grid_steps }} 个网格</strong></div>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" class="text-center text-secondary py-5">暂无符合条件的报警记录</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% for alert in alert_logs %}
+      <dialog class="notification-preview-dialog" id="notificationPreviewDialog{{ alert.id }}">
+        <div class="notification-preview-dialog-header">
+          <div>
+            <div class="small text-secondary">通知预览</div>
+            <div class="fw-semibold">{{ alert.code }} {{ alert.created_at | china_time }}</div>
+          </div>
+          <button class="btn-close notification-preview-close-btn" type="button" aria-label="关闭"></button>
+        </div>
+        <pre class="mb-3 small notification-preview notification-preview-dialog-content" id="notificationPreview{{ alert.id }}">{{ alert_notification_previews[alert.id] }}</pre>
+        <div class="notification-preview-dialog-footer">
+          <button
+            class="btn btn-sm btn-outline-secondary copy-notification-btn"
+            type="button"
+            data-copy-target="notificationPreview{{ alert.id }}"
+          >
+            复制通知
+          </button>
+          <button class="btn btn-sm btn-dark notification-preview-close-btn" type="button">关闭</button>
+        </div>
+      </dialog>
+    {% endfor %}
+    <div class="d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-2 p-3 border-top">
+      <div class="small text-secondary">当前页 {{ alert_history.page }} / {{ alert_history.total_pages }}</div>
+      <div class="d-flex gap-2">
+        {% if alert_history.has_prev %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard.index', **alert_history.prev_args) }}#alert-history" data-alert-history-jump>上一页</a>
+        {% else %}
+          <span class="btn btn-sm btn-outline-secondary disabled">上一页</span>
+        {% endif %}
+        {% if alert_history.has_next %}
+          <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('dashboard.index', **alert_history.next_args) }}#alert-history" data-alert-history-jump>下一页</a>
+        {% else %}
+          <span class="btn btn-sm btn-outline-secondary disabled">下一页</span>
+        {% endif %}
+      </div>
+    </div>
+  </section>
+
+  <section class="dashboard-card task-panel mt-4 runtime-diagnostics-panel" id="runtime-diagnostics">
+    <div class="dashboard-card-header">
+      <div>
+      <h2 class="dashboard-section-title">运行诊断</h2>
+      <div class="text-secondary small">
+        运行诊断：轮询 {{ runtime_diagnostics.last_poll_status or "暂无" }}，行情 {{ runtime_diagnostics.market_data_mode }}，通知 {{ runtime_diagnostics.notification_mode }}，最近报警 {{ runtime_alert_status_label }}。
+      </div>
+      </div>
+    </div>
+    <details class="diagnostic-details">
+      <summary>展开运行诊断详情</summary>
+    <div class="row g-0">
+      <div class="col-12 col-lg-6 col-xl-4 p-3 border-end border-bottom">
+        <div class="text-secondary small mb-2">自动监控诊断</div>
+        <div>自动监控：{{ "已启用" if runtime_diagnostics.auto_monitoring_enabled else "已关闭" }}</div>
+        <div>暂停状态：{{ "已暂停" if runtime_diagnostics.auto_monitoring_paused else "未暂停" }}</div>
+        <div>轮询状态：{{ monitor_status_view.poll.label }}</div>
+        <div>最近轮询说明：{{ runtime_diagnostics.last_poll_message or "暂无" }}</div>
+        <div>最近轮询时间：{{ runtime_diagnostics.last_poll_at | china_time if runtime_diagnostics.last_poll_at else "暂无" }}</div>
+        <div>
+          最近轮询耗时：
+          {% if runtime_diagnostics.last_poll_duration_ms is not none %}
+            {{ runtime_diagnostics.last_poll_duration_ms }} ms
+          {% else %}
+            暂无
+          {% endif %}
+        </div>
+      </div>
+      <div class="col-12 col-lg-6 col-xl-4 p-3 border-end border-bottom">
+        <div class="text-secondary small mb-2">行情源诊断</div>
+        <div>行情模式：{{ runtime_diagnostics.market_data_mode }}</div>
+        <div>最近行情源：{{ runtime_diagnostics.last_market_provider if runtime_diagnostics.last_market_provider else "无" }}</div>
+        <div>最近行情请求状态：{{ runtime_diagnostics.last_market_request_status or "暂无" }}</div>
+        <div>最近行情请求说明：{{ runtime_diagnostics.last_market_request_message or "暂无" }}</div>
+        <div>最近行情错误：{{ runtime_diagnostics.last_market_error if runtime_diagnostics.last_market_error else "无" }}</div>
+        {% if runtime_diagnostics.market_data_mode == "manual_only" %}
+          <div class="text-secondary small mt-2">当前为 manual_only 安全模式，已跳过自动行情轮询，不请求真实行情。</div>
+        {% endif %}
+      </div>
+      <div class="col-12 col-lg-6 col-xl-4 p-3 border-bottom">
+        <div class="text-secondary small mb-2">iFind 诊断</div>
+        <div>授权状态：{{ runtime_diagnostics.ifind_auth_state }}</div>
+        <div>Refresh Token：{{ "已配置" if runtime_diagnostics.ifind_has_refresh_token else "未配置" }}</div>
+        <div>Access Token：{{ "已就绪" if runtime_diagnostics.ifind_has_access_token else "未就绪" }}</div>
+        <div>最近刷新时间：{{ runtime_diagnostics.ifind_last_refresh_at | china_time if runtime_diagnostics.ifind_last_refresh_at else "暂无" }}</div>
+        <div>刷新结果：{{ "成功" if runtime_diagnostics.ifind_last_refresh_success else "未成功" }}</div>
+        <div>权限更新日：每月 {{ ifind_permission_status.renewal_day }} 日</div>
+        <div>下次权限更新日：{{ ifind_permission_status.next_renewal_date if ifind_permission_status.next_renewal_date else "暂无" }}</div>
+        <div>权限提醒状态：{{ runtime_diagnostics.ifind_permission_status or "暂无" }}</div>
+        <div class="text-secondary small mt-2">{{ runtime_diagnostics.ifind_permission_message or "暂无" }}</div>
+      </div>
+      <div class="col-12 col-lg-6 col-xl-4 p-3 border-end">
+        <div class="text-secondary small mb-2">报警诊断</div>
+        <div>最近报警状态：{{ runtime_alert_status_label }}</div>
+        <div>最近报警合约：{{ runtime_diagnostics.last_alert_code if runtime_diagnostics.last_alert_code else "暂无" }}</div>
+        <div>最近报警方向：{{ runtime_diagnostics.last_alert_direction if runtime_diagnostics.last_alert_direction else "暂无" }}</div>
+        <div>最近突破网格数：{{ runtime_diagnostics.last_alert_grid_steps if runtime_diagnostics.last_alert_grid_steps is not none else "暂无" }}</div>
+        <div>重复报警跳过：{{ "是" if runtime_diagnostics.last_duplicate_alert_skipped else "否" }}</div>
+        <div>重复通知跳过：{{ "是" if runtime_diagnostics.last_duplicate_notification_skipped else "否" }}</div>
+        <div class="text-secondary small mt-2">{{ runtime_diagnostics.last_alert_message or "暂无" }}</div>
+      </div>
+      <div class="col-12 col-lg-6 col-xl-4 p-3 border-end">
+        <div class="text-secondary small mb-2">通知诊断</div>
+        <div>通知模式：{{ runtime_diagnostics.notification_mode }}</div>
+        <div>通知通道：{{ notification_channel_status.label }}</div>
+        <div>通道配置：{{ "已配置" if runtime_diagnostics.notification_channel_configured else "未配置" }}</div>
+        {% if notification_channel_status.channel == "feishu" %}
+          <div>签名校验：{{ "已配置" if config.FEISHU_WEBHOOK_SECRET else "未配置" }}</div>
+        {% endif %}
+        <div>真实发送：{{ "已启用" if runtime_diagnostics.notification_can_send_real_message else "未启用" }}</div>
+        <div>最近发送结果：{{ runtime_diagnostics.last_notification_delivery_status if runtime_diagnostics.last_notification_delivery_status else "暂无" }}</div>
+        <div>最近发送耗时：{{ runtime_diagnostics.last_notification_duration_ms if runtime_diagnostics.last_notification_duration_ms is not none else "暂无" }}{% if runtime_diagnostics.last_notification_duration_ms is not none %} ms{% endif %}</div>
+        <div>可重试：{{ "是" if runtime_diagnostics.last_notification_can_retry else "否" }}</div>
+        <div>最近尝试次数：{{ runtime_diagnostics.last_notification_attempt_count }}</div>
+        <div>最近通知错误：{{ runtime_diagnostics.last_notification_error if runtime_diagnostics.last_notification_error else "无" }}</div>
+        <div class="text-secondary small mt-2">通道说明：{{ notification_channel_status.message }}</div>
+        <div class="text-secondary small mt-2">安全错误摘要：{{ runtime_diagnostics.last_notification_safe_error_summary if runtime_diagnostics.last_notification_safe_error_summary else "无" }}</div>
+      </div>
+      <div class="col-12 col-lg-6 col-xl-4 p-3">
+        <div class="text-secondary small mb-2">高频报警诊断</div>
+        <div>高频报警监控：{{ "启用" if runtime_diagnostics.notification_burst_enabled else "关闭" }}</div>
+        <div>最近高频报警：{{ "已触发" if runtime_diagnostics.last_burst_alert_detected else "无" }}</div>
+        <div>窗口内报警数：{{ runtime_diagnostics.last_burst_alert_count }}</div>
+        <div>窗口长度：{{ runtime_diagnostics.last_burst_alert_window_seconds }} 秒</div>
+        <div class="text-secondary small mt-2">{{ runtime_diagnostics.last_burst_alert_message if runtime_diagnostics.last_burst_alert_message else "暂无" }}</div>
+      </div>
+    </div>
+
+    </details>
+  </section>
+
+  </div>
+
+  <div class="modal fade" id="addTaskModal" tabindex="-1" aria-labelledby="addTaskModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <form method="post" action="{{ url_for('dashboard.create_task') }}">
+          <div class="modal-header">
+            <h2 class="modal-title fs-5" id="addTaskModalLabel">新增监控任务</h2>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+          </div>
+          <div class="modal-body">
+            {% include "dashboard/task_form.html" %}
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+            <button type="submit" class="btn btn-dark">保存</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  {% for task in tasks %}
+    <div class="modal fade" id="testPriceModal{{ task.id }}" tabindex="-1" aria-labelledby="testPriceModalLabel{{ task.id }}" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <form method="post" action="{{ url_for('dashboard.test_price', task_id=task.id) }}">
+            <div class="modal-header">
+              <h2 class="modal-title fs-5" id="testPriceModalLabel{{ task.id }}">测试价格 {{ task.code }}</h2>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              <div class="mb-3">
+                <label class="form-label" for="currentPrice{{ task.id }}">模拟当前价格</label>
+                <input
+                  class="form-control"
+                  id="currentPrice{{ task.id }}"
+                  name="current_price"
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  required
+                >
+              </div>
+              <div class="small text-secondary">
+                当前基准价 {{ "%.2f"|format(task.base_price) }}，
+                网格区间 {{ "%.2f"|format(task.base_price - task.threshold) }}
+                ~ {{ "%.2f"|format(task.base_price + task.threshold) }}。
+              </div>
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="submit" class="btn btn-dark">执行测试</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="modal fade" id="editTaskModal{{ task.id }}" tabindex="-1" aria-labelledby="editTaskModalLabel{{ task.id }}" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content">
+          <form method="post" action="{{ url_for('dashboard.edit_task', task_id=task.id) }}">
+            <div class="modal-header">
+              <h2 class="modal-title fs-5" id="editTaskModalLabel{{ task.id }}">编辑 {{ task.code }}</h2>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="关闭"></button>
+            </div>
+            <div class="modal-body">
+              {% include "dashboard/task_form.html" %}
+            </div>
+            <div class="modal-footer">
+              <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">取消</button>
+              <button type="submit" class="btn btn-dark">保存</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  {% endfor %}
+{% endblock %}
